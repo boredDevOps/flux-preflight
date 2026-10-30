@@ -373,6 +373,161 @@ def test_block_mode_fails_the_job(repo: Repo, capsys: Cap) -> None:
     assert repo.check(capsys, mode="block").code == 1
 
 
+ROOT = "clusters/prod/kustomizations.yaml"
+OTHER_SOURCE = """\
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: other
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://git.example.invalid/other.git
+  ref:
+    tag: v1.1.0
+"""
+READS_OTHER = """\
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: other-crds
+  namespace: flux-system
+spec:
+  interval: 1h
+  path: ./config/crd
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: other
+"""
+OTHER_KS = "Kustomization/flux-system/other-crds"
+OTHER_GIT = "GitRepository/flux-system/other"
+
+
+def _reads_another_repository(repo: Repo, reader: str = READS_OTHER) -> str:
+    """The base commit, with a Kustomization that reads another repository. Returns the root."""
+    root = (repo.path / ROOT).read_text(encoding="utf-8")
+    repo.write({ROOT: root + OTHER_SOURCE + reader})
+    repo.base = repo.commit("reads another repository")
+    return root
+
+
+def test_reading_another_repository_is_listed_and_warns_of_nothing(repo: Repo, capsys: Cap) -> None:
+    _reads_another_repository(repo)
+    checked = repo.check(capsys)
+    assert checked.code == 0
+    assert checked.rules("warn") == []
+    assert "not checked" in checked.find("GC005", OTHER_KS)["message"]
+
+
+def test_deleting_it_says_what_goes_cannot_be_counted(repo: Repo, capsys: Cap) -> None:
+    root = _reads_another_repository(repo)
+    repo.write({ROOT: root + OTHER_SOURCE})
+    checked = repo.check(capsys)
+    assert checked.code == 3
+    message = checked.find("GC101", OTHER_KS)["message"]
+    assert "everything it applied" in message and "cannot be known" in message
+    assert "GitRepository/flux-system/other" in message
+    assert "applied nothing" not in message
+
+
+def test_deleting_it_without_prune_takes_nothing_along(repo: Repo, capsys: Cap) -> None:
+    root = _reads_another_repository(repo, READS_OTHER.replace("prune: true", "prune: false"))
+    repo.write({ROOT: root + OTHER_SOURCE})
+    assert "applied nothing" in repo.check(capsys).find("GC101", OTHER_KS)["message"]
+
+
+def test_deleting_its_parent_says_what_is_not_counted(repo: Repo, capsys: Cap) -> None:
+    root = (repo.path / ROOT).read_text(encoding="utf-8")
+    parent = READS_OTHER.replace("other-crds", "infra").replace("./config/crd", "./infra")
+    parent = parent.replace("name: other\n", "name: flux-system\n")
+    repo.write(
+        {
+            ROOT: root + OTHER_SOURCE + parent,
+            "infra/kustomization.yaml": (
+                "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n"
+                "resources:\n  - crds.yaml\n"
+            ),
+            "infra/crds.yaml": READS_OTHER,
+        }
+    )
+    repo.base = repo.commit("a parent")
+    repo.write({ROOT: root + OTHER_SOURCE})
+    message = repo.check(capsys).find("GC101", "Kustomization/flux-system/infra")["message"]
+    assert "1 object (1 Kustomization)" in message
+    assert f"Not counted, and gone too: everything applied by {OTHER_KS}" in message
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "subject", "field"),
+    [
+        pytest.param("tag: v1.1.0", "tag: v1.2.0", OTHER_GIT, "ref", id="another tag"),
+        pytest.param("other.git", "fork.git", OTHER_GIT, "url", id="another url"),
+        pytest.param("./config/crd", "./config/x", OTHER_KS, "path", id="another path"),
+        pytest.param(
+            "config/crd\n  prune: true", "config/crd\n  prune: false", OTHER_KS, "prune", id="prune"
+        ),
+        pytest.param(
+            "  path: ./config/crd",
+            "  targetNamespace: elsewhere\n  path: ./config/crd",
+            OTHER_KS,
+            "targetNamespace",
+            id="target namespace",
+        ),
+    ],
+)
+def test_a_change_to_what_it_applies_warns(
+    repo: Repo, capsys: Cap, old: str, new: str, subject: str, field: str
+) -> None:
+    _reads_another_repository(repo)
+    repo.edit(ROOT, old, new)
+    checked = repo.check(capsys)
+    assert checked.code == 0
+    assert checked.rules("block") == []
+    message = checked.find("GC206", subject)["message"]
+    assert f"changes {field}" in message and "cannot be seen here" in message
+    assert "findings above" not in message
+
+
+def test_pointing_a_kustomization_at_another_repository_warns(repo: Repo, capsys: Cap) -> None:
+    _reads_another_repository(repo)
+    repo.edit(
+        ROOT,
+        "  path: ./apps\n  prune: true\n  sourceRef:\n    kind: GitRepository\n"
+        "    name: flux-system",
+        "  path: ./apps\n  prune: true\n  sourceRef:\n    kind: GitRepository\n    name: other",
+    )
+    checked = repo.check(capsys)
+    assert "sourceRef" in checked.find("GC206", "Kustomization/flux-system/apps")["message"]
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        pytest.param("  interval: 1h\n  url:", "  interval: 2h\n  url:", id="how often it fetches"),
+        pytest.param(
+            "  interval: 1h\n  path:", "  interval: 2h\n  timeout: 5m\n  path:", id="the timeout"
+        ),
+    ],
+)
+def test_a_change_that_keeps_the_content_does_not_warn(
+    repo: Repo, capsys: Cap, old: str, new: str
+) -> None:
+    _reads_another_repository(repo)
+    repo.edit(ROOT, old, new)
+    checked = repo.check(capsys)
+    assert checked.code == 0
+    assert "GC206" not in checked.rules()
+
+
+def test_a_source_nothing_foreign_reads_does_not_warn(repo: Repo, capsys: Cap) -> None:
+    _reads_another_repository(repo, "")
+    repo.edit(ROOT, "tag: v1.1.0", "tag: v1.2.0")
+    assert "GC206" not in repo.check(capsys).rules()
+
+
 def test_a_cluster_on_another_branch_is_left_alone(repo: Repo, capsys: Cap) -> None:
     repo.edit("apps/kustomization.yaml", "  - namespace.yaml\n", "")
     checked = repo.check(capsys, target="develop")

@@ -23,6 +23,7 @@ RULES: dict[str, str] = {
     "GC203": "a Helm chart changes",
     "GC204": "something is switched off",
     "GC205": "a Flux Kustomization's spec changes",
+    "GC206": "what a Kustomization applies from another repository changes, unseen",
     "GC301": "a Secret in Git in plain text",
     "GC302": "a value that looks like a password",
     "GC303": "an image without a pinned version",

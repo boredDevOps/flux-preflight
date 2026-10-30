@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 
 from flux_preflight.context import ClusterCheck
-from flux_preflight.model import FLUX_HELM, Doc, Finding, Ref, Severity, canonical, dig
+from flux_preflight.model import FLUX_HELM, FLUX_SOURCE, Doc, Finding, Ref, Severity, canonical, dig
+from flux_preflight.render import source_of
 
 IMMUTABLE: dict[tuple[str, str], tuple[str, ...]] = {
     ("apps", "Deployment"): ("spec.selector",),
@@ -75,6 +76,23 @@ _UNITS = {
 }
 
 
+# The fields of a Flux Kustomization that decide what it applies.
+KS_CONTENT = (
+    "path",
+    "prune",
+    "sourceRef",
+    "targetNamespace",
+    "namePrefix",
+    "nameSuffix",
+    "patches",
+    "components",
+    "postBuild",
+)
+# The fields of a source that do not change what it serves. Anything else may.
+SOURCE_DELIVERY = ("interval", "timeout", "suspend", "secretRef", "proxySecretRef", "certSecretRef")
+PRUNE_WARNING = "With prune on, what the new content no longer has is deleted."
+
+
 def quantity(value: object) -> float | None:
     match = re.fullmatch(r"\s*([0-9.]+)\s*([KMGTP]i|[kMGTP])?\s*", str(value))
     if not match:
@@ -95,6 +113,8 @@ def check(cc: ClusterCheck) -> list[Finding]:
             found.extend(_helm(cc, ref, old, new))
         if ref.is_flux_kustomization:
             found.extend(_kustomization(cc, ref, old, new))
+        if ref.group == FLUX_SOURCE:
+            found.extend(_foreign_source(cc, ref, old, new))
         found.extend(_switched_off(cc, ref, old, new))
     return found
 
@@ -245,14 +265,55 @@ def _kustomization(cc: ClusterCheck, ref: Ref, old: Doc, new: Doc) -> list[Findi
     changed = [
         name for name in KS_FIELDS if not _same(dig(old, f"spec.{name}"), dig(new, f"spec.{name}"))
     ]
-    if not changed:
+    found: list[Finding] = []
+    why = cc.head.foreign.get(ref) or cc.base.foreign.get(ref)
+    unseen = [name for name in changed if name in KS_CONTENT] if why else []
+    if unseen:
+        found.append(
+            cc.finding(
+                "GC206",
+                Severity.WARN,
+                ref,
+                f"changes {', '.join(unseen)}. What it applies after this cannot be seen here: "
+                f"{why}. {PRUNE_WARNING}",
+            )
+        )
+    seen = [name for name in changed if name not in unseen]
+    if seen:
+        found.append(
+            cc.finding(
+                "GC205",
+                Severity.INFO,
+                ref,
+                f"changes {', '.join(seen)}; what that does is in the findings above",
+            )
+        )
+    return found
+
+
+def _foreign_source(cc: ClusterCheck, ref: Ref, old: Doc, new: Doc) -> list[Finding]:
+    """A source moved by this merge: the Kustomizations that read it apply something else now."""
+    before, after = old.get("spec") or {}, new.get("spec") or {}
+    changed = sorted(
+        name
+        for name in set(before) | set(after)
+        if name not in SOURCE_DELIVERY and not _same(before.get(name), after.get(name))
+    )
+    readers = []
+    for ks in sorted(cc.head.foreign):
+        source = source_of(cc.head.kustomizations[ks])
+        if (source.kind, source.namespace, source.name) == (ref.kind, ref.namespace, ref.name):
+            readers.append(str(ks))
+    if not changed or not readers:
         return []
     return [
         cc.finding(
-            "GC205",
-            Severity.INFO,
+            "GC206",
+            Severity.WARN,
             ref,
-            f"changes {', '.join(changed)}; what that does is in the findings above",
+            f"changes {', '.join(changed)}, and {', '.join(readers)} applies what it serves. "
+            f"What that is after this cannot be seen here: read the other repository's changes. "
+            f"{PRUNE_WARNING}",
         )
     ]
 

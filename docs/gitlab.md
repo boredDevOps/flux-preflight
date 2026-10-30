@@ -173,3 +173,6 @@ verified nothing.
   request's. This setup has not been tested with them.
 - **Charts are not rendered yet.** HelmRelease values are checked, but what a chart version deletes
   is not. It is listed under "Not checked".
+- **A Kustomization that reads another repository is not rendered.** Deleting it still blocks, and
+  moving its source to another tag warns as `GC206`, but read that repository's changes yourself.
+  [The README lists what is reported](../README.md#a-kustomization-that-reads-another-repository).

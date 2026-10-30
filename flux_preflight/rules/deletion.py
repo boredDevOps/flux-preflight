@@ -32,6 +32,17 @@ def _counts(refs: list[Ref]) -> str:
     return ", ".join(f"{n} {kind}" for kind, n in counts.most_common())
 
 
+def _unknowable(cc: ClusterCheck, ks: Ref) -> str | None:
+    """Why what a deleted Kustomization takes along cannot be counted; None when it can."""
+    if dig(cc.base.kustomizations.get(ks, {}), "spec.prune") is not True:
+        return None
+    if ks in cc.base.foreign:
+        return cc.base.foreign[ks]
+    if ks in cc.base.errors:
+        return "it did not build before this change"
+    return None
+
+
 def _why(cc: ClusterCheck, item: Deletion) -> str:
     ref, doc = item.ref, item.doc
     if ref == cc.base.root:
@@ -40,6 +51,12 @@ def _why(cc: ClusterCheck, item: Deletion) -> str:
             "everything in this cluster that Flux applied"
         )
     if ref.is_flux_kustomization:
+        unknowable = _unknowable(cc, ref)
+        if unknowable:
+            return (
+                "Flux deletes it and everything it applied. How much that is cannot be known "
+                f"here: {unknowable}"
+            )
         taken = [d.ref for d in cc.outcome.taken_by(ref)]
         named = sorted(str(r) for r in taken if protected(r) and not r.is_flux_kustomization)
         noun = "object" if len(taken) == 1 else "objects"
@@ -48,6 +65,13 @@ def _why(cc: ClusterCheck, item: Deletion) -> str:
             said += ". Among them: " + ", ".join(named[:15])
             if len(named) > 15:
                 said += f" and {len(named) - 15} more"
+        uncounted = sorted(str(r) for r in taken if _unknowable(cc, r))
+        if uncounted:
+            said += (
+                ". Not counted, and gone too: everything applied by "
+                + ", ".join(uncounted)
+                + ", which cannot be known here"
+            )
         return said if taken else "Flux deletes it; it applied nothing that would go with it"
     if ref.kind == "Namespace" and ref.group == "":
         inside = [r for r in cc.base_objects if r.namespace == ref.name]

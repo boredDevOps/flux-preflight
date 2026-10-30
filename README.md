@@ -34,6 +34,7 @@ It never talks to a cluster (`KUBECONFIG` points at nothing) and needs no secret
 | GC009 | warn | a chart or Kustomization reads a source the cluster's Git does not define |
 | GC203 | warn | a HelmRelease changes chart or source, or moves to a new major version |
 | GC204 | warn | something is suspended or scaled to 0 |
+| GC206 | warn | a Kustomization reading another repository changes what it applies, or that repository's source moves to another tag or URL: the new content cannot be seen |
 | GC302 | warn | a value under a password/token-like key written in Git (the value is never printed) |
 | GC303 | warn | an image without a pinned version (`latest`, no tag) |
 | GC304 | warn | a chart version that is a range or missing |
@@ -48,6 +49,21 @@ unrelated work.
 Nothing is skipped silently. A Kustomization reading another source, a schema that could not be
 downloaded, or a chart's contents (HelmRelease values are checked, the charts are not rendered)
 is listed under "Not checked".
+
+### A Kustomization that reads another repository
+
+The check has only this repository, so it cannot see what such a Kustomization applies (GC005).
+What it can see, it reports:
+
+| Change in the merge request | Finding |
+|---|---|
+| The Kustomization, or a parent that applies it, is deleted | GC101 blocks, and says that what it applied goes too and cannot be counted |
+| Its source is deleted | GC101 blocks |
+| Its source's `ref`, `url` or other content field changes | GC206 warns |
+| Its `path`, `prune`, `sourceRef`, `patches` or another field that decides the content changes | GC206 warns |
+
+What the other repository deletes is not counted towards GC103. A source that follows a branch
+can change without any merge request here, so no check sees it. Pin these sources to a tag.
 
 ## Accepting a finding
 
