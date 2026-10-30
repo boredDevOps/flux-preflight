@@ -21,7 +21,7 @@ jobs:
       - name: Lint, typecheck, tests (with the flux and kubeconform the image ships)
         run: docker build --target test .
 
-  # A tag v1.2.3 publishes ghcr.io/boreddevops/flux-preflight:1.2.3 and :1, which CI jobs pin.
+  # A tag v1.2.3 publishes ghcr.io/boreddevops/flux-preflight:v1.2.3 and :v1, which CI jobs pin.
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: test
@@ -39,17 +39,16 @@ jobs:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/flux-preflight"
           echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           docker buildx build --platform linux/amd64,linux/arm64 --provenance=false \
-            -t "$image:$version" -t "$image:${version%%.*}" --push .
+            -t "$image:$GITHUB_REF_NAME" -t "$image:${GITHUB_REF_NAME%%.*}" --push .
       # GHCR starts every new package private, whatever the repository is. Fails on the first
       # release until someone makes it public once; see "Releases" in the README.
       - name: Anyone can pull it, without logging in
         run: |
           set -euo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/flux-preflight:${GITHUB_REF_NAME#v}"
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/flux-preflight:$GITHUB_REF_NAME"
           docker logout ghcr.io
           for platform in linux/amd64 linux/arm64; do
             if ! docker pull --platform "$platform" "$image"; then

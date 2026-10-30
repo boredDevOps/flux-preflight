@@ -68,7 +68,7 @@ The steps, the settings around the job and what to do when it fails are in
 ```yaml
 flux-preflight:
   stage: test
-  image: ghcr.io/boreddevops/flux-preflight:1   # the major version: fixes arrive, rules do not change under you
+  image: ghcr.io/boreddevops/flux-preflight:v1   # the major version: fixes arrive, rules do not change under you
   variables:
     GIT_DEPTH: 0            # the merge request's base commit must be in the clone
   script:
@@ -136,9 +136,9 @@ against them. Each rule has a change it must stop, and a look-alike it must let 
 ## Releases
 
 `.github/workflows/ci.yml` runs the test stage on every push and pull request. A tag `vX.Y.Z`
-publishes `ghcr.io/boreddevops/flux-preflight:X.Y.Z` and `:X`, for `linux/amd64` and `linux/arm64`.
-A new rule that can block is a new major version, so a repository pinned to `:1` is not blocked by
-surprise.
+publishes `ghcr.io/boreddevops/flux-preflight:vX.Y.Z` and `:vX`, for `linux/amd64` and `linux/arm64`.
+`:vX.Y.Z` never changes. `:vX` moves to the newest `vX` release. A new rule that can block is a new
+major version, so a repository pinned to `:v1` is not blocked by surprise.
 
 The first release needs one manual step, because GHCR starts every new package private, even from
 a public repository. In the organization's settings, allow public packages under *Packages*. After

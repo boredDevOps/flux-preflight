@@ -49,7 +49,7 @@ The value applies to all clusters in the repository. Update it when you upgrade 
 ```yaml
 flux-preflight:
   stage: test
-  image: ghcr.io/boreddevops/flux-preflight:1
+  image: ghcr.io/boreddevops/flux-preflight:v1
   variables:
     GIT_DEPTH: 0
   script:
@@ -68,7 +68,7 @@ flux-preflight:
 | Line | Why it is there |
 |---|---|
 | `stage: test` | Use a stage your pipeline defines. |
-| `image: ...:1` | Follows the major version: fixes arrive, new blocking rules do not. For an exact version use `:1.0.0`. |
+| `image: ...:v1` | Follows the newest `v1` release: fixes arrive, new blocking rules do not. To pin an exact release, use its full tag, `vX.Y.Z`. |
 | `GIT_DEPTH: 0` | The merge request's base commit must be in the clone. |
 | `when: always` | The reports are kept when the job fails, which is when you need them. |
 | `exit_codes: [3]` | Warn mode: would-block findings show as a warning and the pipeline passes. Any other failure stays red. |
