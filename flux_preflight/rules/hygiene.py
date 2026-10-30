@@ -67,27 +67,27 @@ def _literals(doc: Any, path: str = "") -> Iterator[tuple[str, str]]:
             yield from _literals(item, f"{path}[{index}]")
 
 
-def _looks_real(value: str) -> bool:
+def _looks_real(value: str, min_length: int) -> bool:
     return (
-        len(value) >= 6
+        len(value) >= min_length
         and not _PLACEHOLDER.match(value)
         and not value.startswith(("ref+", "vault:", "arn:", "awssm:", "secretsmanager:"))
     )
 
 
-def _fingerprints(raw: list[RawDoc]) -> set[tuple[str, str, str]]:
+def _fingerprints(raw: list[RawDoc], min_length: int) -> set[tuple[str, str, str]]:
     found: set[tuple[str, str, str]] = set()
     for item in raw:
         if item.doc.get("kind") == "Secret" or "sops" in item.doc:
             continue
         for path, value in _literals(item.doc):
-            if _looks_real(value):
+            if _looks_real(value, min_length):
                 digest = hashlib.sha256(value.encode()).hexdigest()
                 found.add((item.file, f"{Ref.of(item.doc)}:{path}", digest))
     return found
 
 
-def check_files(files: Files) -> list[Finding]:
+def check_files(files: Files, min_secret_length: int) -> list[Finding]:
     found: list[Finding] = []
     existing: list[str] = []
     for item in files.head:
@@ -123,7 +123,9 @@ def check_files(files: Files) -> list[Finding]:
                 + (f" and {len(existing) - 20} more" if len(existing) > 20 else ""),
             )
         )
-    new = _fingerprints(files.head) - _fingerprints(files.base)
+    new = _fingerprints(files.head, min_secret_length) - _fingerprints(
+        files.base, min_secret_length
+    )
     lines = {(i.file, f"{Ref.of(i.doc)}"): i.line for i in files.head}
     for file, where, _ in sorted(new):
         name, _, path = where.partition(":")

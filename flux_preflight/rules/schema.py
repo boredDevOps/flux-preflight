@@ -17,10 +17,10 @@ from typing import Any
 
 import yaml
 
+from flux_preflight.config import Config
 from flux_preflight.context import ClusterCheck
 from flux_preflight.model import Doc, Finding, Ref, Severity, dig
 
-KUBECONFORM_SECONDS = 600
 _NETWORK = ("dial tcp", "no such host", "timeout", "connection refused", "failed downloading")
 
 
@@ -73,9 +73,7 @@ class Result:
         self.failed: str | None = None
 
 
-def run(
-    kubeconform: str, objects: dict[Ref, Doc], work: Path, version: str, schemas: list[str]
-) -> Result:
+def run(kubeconform: str, objects: dict[Ref, Doc], work: Path, config: Config) -> Result:
     result = Result()
     if not shutil.which(kubeconform):
         result.failed = f"{kubeconform} is not installed"
@@ -89,10 +87,10 @@ def run(
     cache.mkdir(exist_ok=True)
     locations = [
         str(local) + "/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json",
-        *schemas,
+        *config.schemas,
     ]
     args = [kubeconform, "-strict", "-ignore-missing-schemas", "-output", "json", "-verbose"]
-    args += ["-kubernetes-version", version, "-cache", str(cache)]
+    args += ["-kubernetes-version", config.kubernetes_version, "-cache", str(cache)]
     for location in locations:
         args += ["-schema-location", location]
     try:
@@ -100,11 +98,14 @@ def run(
             [*args, str(manifest)],
             capture_output=True,
             text=True,
-            timeout=KUBECONFORM_SECONDS,
+            timeout=config.kubeconform_seconds,
             check=False,
         )
     except subprocess.TimeoutExpired:
-        result.failed = f"kubeconform took longer than {KUBECONFORM_SECONDS} s"
+        result.failed = (
+            f"kubeconform took longer than {config.kubeconform_seconds} s "
+            "(timeouts.kubeconform_seconds)"
+        )
         return result
     try:
         resources = json.loads(done.stdout or "{}").get("resources") or []
@@ -131,9 +132,7 @@ def check(cc: ClusterCheck, kubeconform: str, work: Path) -> list[Finding]:
     config = cc.config
     if not config.schema_check:
         return [Finding("GC309", Severity.INFO, cc.name, "schemas", "the schema check is off")]
-    head = run(
-        kubeconform, cc.head_objects, work / "head", config.kubernetes_version, config.schemas
-    )
+    head = run(kubeconform, cc.head_objects, work / "head", config)
     if head.failed:
         return [
             Finding(
@@ -144,9 +143,7 @@ def check(cc: ClusterCheck, kubeconform: str, work: Path) -> list[Finding]:
                 f"the schema check did not run: {head.failed}",
             )
         ]
-    base = run(
-        kubeconform, cc.base_objects, work / "base", config.kubernetes_version, config.schemas
-    )
+    base = run(kubeconform, cc.base_objects, work / "base", config)
     found: list[Finding] = []
     by_name: dict[tuple[str, str], Ref] = {(r.kind, r.name): r for r in cc.head_objects}
     old: list[str] = []

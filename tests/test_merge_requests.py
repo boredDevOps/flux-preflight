@@ -6,6 +6,10 @@ a check that blocks harmless work gets switched off, one that misses gets truste
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+from typing import Any
+
 import pytest
 
 from tests.conftest import Repo
@@ -118,6 +122,129 @@ def test_many_deletions_at_once_are_stopped(repo: Repo, capsys: Cap) -> None:
         "Flux deletes 12 of the"
         in checked.find("GC103", "Kustomization/flux-system/apps")["message"]
     )
+
+
+def _configmaps(count: int) -> str:
+    return "".join(
+        f"---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c{i}\n  namespace: shop\n"
+        for i in range(count)
+    )
+
+
+def _with_config(repo: Repo, config: str, configmaps: int = 0) -> None:
+    """The base commit: `config`, and the apps Kustomization's 3 objects plus `configmaps`."""
+    repo.write({".flux-preflight.yaml": f"mode: warn\nschemas: []\n{config}"})
+    if configmaps:
+        repo.write({"apps/many.yaml": _configmaps(configmaps)})
+        repo.edit(
+            "apps/kustomization.yaml", "  - config.yaml\n", "  - config.yaml\n  - many.yaml\n"
+        )
+    repo.base = repo.commit("the starting point")
+
+
+@pytest.mark.parametrize(
+    ("config", "configmaps", "removed", "stopped"),
+    [
+        pytest.param("", 7, 2, False, id="default: 2 of 10 is exactly 20%"),
+        pytest.param("", 7, 3, True, id="default: 3 of 10 is over 20%"),
+        pytest.param("", 3, 2, True, id="default: 2 of 6 is over 20%"),
+        pytest.param(
+            "limits:\n  max_deletion_ratio: 0.5\n", 3, 2, False, id="a higher ratio lets it pass"
+        ),
+        pytest.param(
+            "limits:\n  max_deletion_ratio: 0.1\n", 7, 2, True, id="a lower ratio stops it"
+        ),
+        pytest.param(
+            "limits:\n  min_objects_for_ratio: 7\n", 3, 2, False, id="under the explicit minimum"
+        ),
+        pytest.param(
+            "limits:\n  min_objects_for_ratio: 6\n", 3, 2, True, id="exactly the explicit minimum"
+        ),
+        pytest.param(
+            "limits:\n  max_deletions: 2\n  max_deletion_ratio: 1\n",
+            7,
+            2,
+            False,
+            id="exactly the explicit count",
+        ),
+        pytest.param(
+            "limits:\n  max_deletions: 2\n  max_deletion_ratio: 1\n",
+            7,
+            3,
+            True,
+            id="over the explicit count",
+        ),
+    ],
+)
+def test_explicit_deletion_limits_replace_the_defaults(
+    repo: Repo, capsys: Cap, config: str, configmaps: int, removed: int, stopped: bool
+) -> None:
+    _with_config(repo, config, configmaps)
+    repo.write({"apps/many.yaml": _configmaps(configmaps - removed)})
+    checked = repo.check(capsys)
+    assert ("GC103" in checked.rules("block")) is stopped
+    assert checked.code == (3 if stopped else 0)
+
+
+@pytest.mark.parametrize(
+    ("config", "stopped"),
+    [
+        pytest.param("", False, id="default: 1 of 3 objects, the share does not count"),
+        pytest.param("limits:\n  min_objects_for_ratio: 3\n", True, id="the explicit minimum"),
+        pytest.param("limits:\n  max_deletions: 0\n", True, id="an explicit zero is not unset"),
+    ],
+)
+def test_a_small_kustomization_follows_the_explicit_limits(
+    repo: Repo, capsys: Cap, config: str, stopped: bool
+) -> None:
+    _with_config(repo, config)
+    repo.edit("apps/kustomization.yaml", "  - config.yaml\n", "")
+    checked = repo.check(capsys)
+    assert ("GC103" in checked.rules("block")) is stopped
+
+
+def test_the_finding_says_which_limits_applied(repo: Repo, capsys: Cap) -> None:
+    _with_config(repo, "limits:\n  max_deletions: 7\n  min_objects_for_ratio: 6\n", 3)
+    repo.write({"apps/many.yaml": _configmaps(1)})
+    message = repo.check(capsys).find("GC103", "Kustomization/flux-system/apps")["message"]
+    assert "The limit is 7 objects, or 20% of a Kustomization with at least 6 objects." in message
+
+
+@pytest.mark.parametrize(
+    ("config", "found"),
+    [
+        pytest.param("", False, id="default: 5 characters is too short to look real"),
+        pytest.param("limits:\n  min_secret_length: 5\n", True, id="the explicit length"),
+    ],
+)
+def test_the_explicit_secret_length_replaces_the_default(
+    repo: Repo, capsys: Cap, config: str, found: bool
+) -> None:
+    _with_config(repo, config)
+    repo.edit("apps/web.yaml", "  replicas: 2\n", "  replicas: 2\n  password: abcde\n")
+    assert ("GC302" in repo.check(capsys).rules("warn")) is found
+
+
+def test_explicit_timeouts_reach_each_program(
+    repo: Repo, capsys: Cap, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _with_config(
+        repo,
+        "timeouts:\n  flux_build_seconds: 71\n  kubeconform_seconds: 72\n  yamllint_seconds: 73\n",
+    )
+    repo.edit("apps/web.yaml", "nginx:1.27.0", "nginx:1.27.1")
+    seen: dict[str, set[int]] = {}
+    real = subprocess.run
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        name = Path(args[0][0]).name
+        if "timeout" in kwargs:
+            seen.setdefault(name, set()).add(kwargs["timeout"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    repo.check(capsys)
+    assert seen == {"flux": {71}, "kubeconform": {72}, "yamllint": {73}}
 
 
 def test_a_selector_change_is_stopped(repo: Repo, capsys: Cap) -> None:

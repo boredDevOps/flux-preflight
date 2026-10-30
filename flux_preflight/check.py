@@ -70,8 +70,10 @@ def run(
     head_raw, broken = raw_docs(head_tree, config.ignore)
     files = Files(base=base_raw, head=head_raw, broken_head=broken, changed=changed)
 
-    result.findings += lint.check(base_tree, head_tree, changed, config.ignore)
-    result.findings += hygiene.check_files(files)
+    result.findings += lint.check(
+        base_tree, head_tree, changed, config.ignore, config.yamllint_seconds
+    )
+    result.findings += hygiene.check_files(files, config.min_secret_length)
 
     names = {entry.sync: entry.name for entry in config.clusters}
     checked: list[ClusterCheck] = []
@@ -138,12 +140,13 @@ def _cluster(
     tools: Tools,
     summary: ClusterSummary,
 ) -> tuple[ClusterCheck, list[Finding]]:
-    head = render_cluster(tools.flux, head_tree, root.name, root.kustomization)
+    seconds = config.flux_build_seconds
+    head = render_cluster(tools.flux, head_tree, root.name, root.kustomization, seconds)
     if base_root is None:
         # A new cluster: nothing is deleted, everything is added.
         base = Render(cluster=root.name, root=head.root)
     else:
-        base = render_cluster(tools.flux, base_tree, root.name, base_root.kustomization)
+        base = render_cluster(tools.flux, base_tree, root.name, base_root.kustomization, seconds)
     outcome: Outcome = compare(base, head)
     cc = ClusterCheck(root.name, root.path, base, head, outcome, files, config)
     summary.kustomizations = len(head.kustomizations)

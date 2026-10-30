@@ -22,7 +22,8 @@ mode: warn                  # reports, and stops nothing
 ignore: [no-run/]           # paths no cluster deploys
 ```
 
-By default each `gotk-sync.yaml` outside `ignore` is one cluster. The README lists the other fields.
+By default each `gotk-sync.yaml` outside `ignore` is one cluster. The README
+[describes every field](../README.md#configuration).
 
 ### Why set `kubernetes_version`
 
@@ -156,7 +157,8 @@ verified nothing.
 |---|---|---|
 | `no --base and not a merge request pipeline` | The job ran in a branch pipeline. | Use the `rules` from step 2. |
 | `the base ... is not in this clone and could not be fetched` | The clone does not have the base commit. | Set `GIT_DEPTH: 0`. |
-| `.flux-preflight.yaml: unknown fields` | A misspelt field in the configuration. | Fix the field. |
+| `.flux-preflight.yaml: ...` | A misspelt field or a value that cannot be used. The message names it. | Fix the field. |
+| `flux build took longer than` | A Kustomization takes longer to build than the job allows. | Raise `timeouts.flux_build_seconds`. |
 | No note on the merge request | No token reached the job. | Check that the variable is not Protected. |
 | `could not write the note` | The token was refused or GitLab was unreachable. | Check the token's scope, role and expiry. |
 | `GC309`: a schema could not be downloaded | No access to the schema host. | Allow the host, or set `schemas:` to a mirror. |

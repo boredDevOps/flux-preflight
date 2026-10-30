@@ -21,7 +21,7 @@ It never talks to a cluster (`KUBECONFIG` points at nothing) and needs no secret
 | GC003 | block | `dependsOn` names a Kustomization or HelmRelease that does not exist |
 | GC004 | block | `dependsOn` goes round in a circle |
 | GC101 | block | Flux deletes a Namespace (and all in it), a CRD (and all its objects), a PVC/PV, StatefulSet, StorageClass, HelmRelease (= `helm uninstall`), a Flux Kustomization (with everything it applied) or source, or anything in `flux-system` |
-| GC103 | block | Flux deletes more than `max_deletions` objects, or more than `max_deletion_ratio` of one Kustomization |
+| GC103 | block | Flux deletes more than `max_deletions` objects, or more than `max_deletion_ratio` of one Kustomization ([limits](#deletion-limits)) |
 | GC104 | block | a protected object moves to another Kustomization (it may be deleted and recreated) |
 | GC201 | block | a field Kubernetes refuses to change: selectors, StatefulSet `volumeClaimTemplates`/`serviceName`, PVC class/modes/shrink, `roleRef`, immutable ConfigMaps/Secrets, CRD scope, a CRD version dropped |
 | GC202 | block | a HelmRelease becomes another release (`releaseName`/`targetNamespace`/`storageNamespace`) |
@@ -100,21 +100,111 @@ Exit codes:
 To block for real, set `mode: block` and turn on *Pipelines must succeed* in the project's
 merge request settings.
 
-`.flux-preflight.yaml` in the repository (every field optional):
+## Configuration
+
+`.flux-preflight.yaml` in the root of the checked repository. The file and every field in it are
+optional, and a field you leave out or leave empty keeps its default. A value you set always wins
+over the default, including `0`, and `--mode` on the command line wins over the file.
+
+A field the check does not know or a value it cannot use, at any level, stops it with exit code 2
+and says which one. A misspelt limit never silently falls back to the default.
 
 ```yaml
-mode: warn                  # warn while thresholds are tuned, then block
-ignore: [no-run/]           # paths no cluster deploys
-clusters:                   # default: every gotk-sync.yaml outside `ignore`
+mode: warn
+ignore: [no-run/]
+clusters:
   - sync: clusters/production/flux-system/gotk-sync.yaml
     name: production
 limits:
   max_deletions: 10
   max_deletion_ratio: 0.2
-kubernetes_version: "1.32.0"   # the schemas GC307 checks against; this is the default
+  min_objects_for_ratio: 5
+  min_secret_length: 6
+timeouts:
+  flux_build_seconds: 180
+  kubeconform_seconds: 600
+  yamllint_seconds: 60
+kubernetes_version: "1.32.0"
+schemas:
+  - default
+  - https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
+schema_check: true
 ```
 
+| Field | Default | What it does |
+|---|---|---|
+| `mode` | `warn` | What a blocking finding does. `warn`: exit code 3, the merge is not stopped. `block`: exit code 1. |
+| `ignore` | none | Paths no cluster deploys: a file, or a directory with everything under it. Patterns like `no-*` do not work. These files get no YAML, Secret or lint checks, and no `gotk-sync.yaml` is looked for in them. A Kustomization that applies an ignored path is still rendered and checked. |
+| `clusters` | every `gotk-sync.yaml` outside `ignore` | Replaces the search: only the clusters listed here are checked, even under an ignored path. |
+| `clusters[].sync` | required | The file that holds the cluster's root Flux Kustomization. |
+| `clusters[].name` | the root's `spec.path` | The cluster's name in reports and in `flux-preflight allow` lines. |
+| `limits.max_deletions` | `10` | Whole number, `0` or more. See [Deletion limits](#deletion-limits). |
+| `limits.max_deletion_ratio` | `0.2` | Number from `0` to `1`, where `0.2` means 20%. See [Deletion limits](#deletion-limits). |
+| `limits.min_objects_for_ratio` | `5` | Whole number, `0` or more. See [Deletion limits](#deletion-limits). |
+| `limits.min_secret_length` | `6` | Whole number, `0` or more. GC302 skips values shorter than this under a password-like key. |
+| `timeouts.flux_build_seconds` | `180` | Whole number, `1` or more. The limit for one `flux build`, run per Kustomization on each side. A Kustomization that takes longer counts as not building (GC001). |
+| `timeouts.kubeconform_seconds` | `600` | Whole number, `1` or more. The limit for one kubeconform run, up to two per cluster. Past it the schema check does not run, and the report says so as GC309. |
+| `timeouts.yamllint_seconds` | `60` | Whole number, `1` or more. The limit for one yamllint run, up to two per changed file. Past it the check stops with exit code 2. |
+| `kubernetes_version` | `"1.32.0"` | The Kubernetes version whose schemas GC307 uses, in quotes: an unquoted `1.30` is the number `1.3`. The check cannot read it from a cluster, so [set it to match yours](docs/gitlab.md#why-set-kubernetes_version). It applies to all clusters. |
+| `schemas` | as in the example | Where kubeconform finds schemas. The CRDs in the cluster's own Git are always tried first. Your list replaces the default, so a mirror must also serve the Kubernetes schemas. `default` is kubeconform's own location. With `[]`, only those CRDs are checked and every other object is listed under GC308. |
+| `schema_check` | `true` | `false` turns GC307 off. The report says so as GC309. |
+
 Only clusters whose GitRepository follows the merge request's target branch are checked.
+
+### Deletion limits
+
+Rule GC103 stops a merge that deletes a lot at once, even when each object is unremarkable. Limits
+are per cluster, and it fires on any of these:
+
+- **The whole cluster:** Flux deletes more than `max_deletions` objects in all, including everything
+  that goes with a deleted Kustomization.
+- **One Kustomization, by count:** it stops building more than `max_deletions` of its own objects.
+- **One Kustomization, by share:** it applies at least `min_objects_for_ratio` objects and stops
+  building more than `max_deletion_ratio` of them. In a small Kustomization one object is already
+  a large share, so below that size only the count applies.
+
+"More than" means a value exactly at the limit passes:
+
+| Change, with the defaults | GC103 |
+|---|---|
+| 10 objects deleted, and they are at most 20% of each Kustomization | no |
+| 11 objects deleted | yes |
+| 2 of a Kustomization's 10 objects (20%) | no |
+| 3 of a Kustomization's 10 objects (30%) | yes |
+| 1 of a Kustomization's 3 objects (33%) | no: fewer than 5 objects |
+
+To turn a limit down or off:
+
+| Setting | Effect |
+|---|---|
+| `max_deletions: 0` | Any deletion is GC103. |
+| `max_deletion_ratio: 1` | The share never fires, only the count does. |
+| `min_objects_for_ratio: 0` | The share applies to every Kustomization, however small. |
+
+The limits do not soften other rules. Deleting one Namespace is GC101 whatever they are set to.
+
+### Command line
+
+| Option | Default | What it does |
+|---|---|---|
+| `--repo` | the current directory | The Flux repository. |
+| `--base` | `$CI_MERGE_REQUEST_DIFF_BASE_SHA`, then `origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME` | What the change is compared with. Required outside a merge request pipeline. |
+| `--head` | `HEAD` | The change. `WORKTREE` checks uncommitted files. |
+| `--target-branch` | `$CI_MERGE_REQUEST_TARGET_BRANCH_NAME` | Only clusters that deploy from this branch are checked. Without it, all are. |
+| `--mode` | `mode` from the file | Overrides it. |
+| `--out` | `flux-preflight` | The directory for `report.md`, `report.json` and `code-quality.json`. |
+| `--description-file` | `$CI_MERGE_REQUEST_DESCRIPTION` | A file to read `flux-preflight allow` lines from. |
+| `--flux` | `$FLUX_BIN`, then `flux` | The Flux binary. |
+| `--kubeconform` | `$KUBECONFORM_BIN`, then `kubeconform` | The kubeconform binary. |
+
+### Environment variables
+
+| Variable | Set by | What it does |
+|---|---|---|
+| `FLUX_PREFLIGHT_GITLAB_TOKEN` | you, optional | Lets the job write the report as a note on the merge request. |
+| `FLUX_BIN`, `KUBECONFORM_BIN` | you, optional | Defaults for `--flux` and `--kubeconform`. |
+| `CI_MERGE_REQUEST_DIFF_BASE_SHA`, `CI_MERGE_REQUEST_TARGET_BRANCH_NAME`, `CI_MERGE_REQUEST_DESCRIPTION` | GitLab | Defaults for the options above. |
+| `CI_API_V4_URL`, `CI_PROJECT_ID`, `CI_MERGE_REQUEST_IID` | GitLab | Where the note goes. |
 
 ## Locally
 

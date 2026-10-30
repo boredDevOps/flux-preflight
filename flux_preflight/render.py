@@ -18,8 +18,6 @@ import yaml
 from flux_preflight.model import Doc, Ref, Render, dig
 from flux_preflight.yamlfiles import YamlProblem, load_all
 
-BUILD_SECONDS = 180
-
 
 class BuildError(Exception):
     pass
@@ -41,7 +39,7 @@ def source_of(ks: Doc) -> Source:
     return Source(str(ref.get("kind", "")), str(namespace), str(ref.get("name", "")))
 
 
-def build(flux: str, tree: Path, ks: Doc) -> list[Doc]:
+def build(flux: str, tree: Path, ks: Doc, seconds: int) -> list[Doc]:
     meta = ks.get("metadata") or {}
     rel = str(dig(ks, "spec.path") or "./")
     path = (tree / rel.lstrip("/")).resolve()
@@ -69,12 +67,14 @@ def build(flux: str, tree: Path, ks: Doc) -> list[Doc]:
             ],
             capture_output=True,
             text=True,
-            timeout=BUILD_SECONDS,
+            timeout=seconds,
             env=env,
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        raise BuildError(f"flux build took longer than {BUILD_SECONDS} s") from exc
+        raise BuildError(
+            f"flux build took longer than {seconds} s (timeouts.flux_build_seconds)"
+        ) from exc
     finally:
         os.unlink(file.name)
     if done.returncode:
@@ -86,7 +86,7 @@ def build(flux: str, tree: Path, ks: Doc) -> list[Doc]:
         raise BuildError(f"flux build printed YAML that does not parse: {exc}") from exc
 
 
-def render_cluster(flux: str, tree: Path, cluster: str, root: Doc) -> Render:
+def render_cluster(flux: str, tree: Path, cluster: str, root: Doc, seconds: int) -> Render:
     """Every Kustomization the root leads to that reads this repository, with what it applies."""
     root_ref = Ref.of(root)
     source = source_of(root)
@@ -102,7 +102,7 @@ def render_cluster(flux: str, tree: Path, cluster: str, root: Doc) -> Render:
             render.foreign[ref] = f"it reads {source_of(ks)}, not this repository"
             continue
         try:
-            docs = build(flux, tree, ks)
+            docs = build(flux, tree, ks, seconds)
         except BuildError as exc:
             render.errors[ref] = str(exc)
             continue

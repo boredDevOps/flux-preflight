@@ -155,18 +155,19 @@ def _mass(cc: ClusterCheck) -> list[Finding]:
         if item.via is None and item.ref != cc.base.root:
             direct.setdefault(item.owner, []).append(item.ref)
     limit, ratio = cc.config.max_deletions, cc.config.max_deletion_ratio
+    least = cc.config.min_objects_for_ratio
     for ks, refs in sorted(direct.items()):
         size = len(cc.base.inventories.get(ks, {}))
         share = len(refs) / size if size else 0.0
-        if len(refs) > limit or (size >= 5 and share > ratio):
+        if len(refs) > limit or (size >= least and share > ratio):
             found.append(
                 cc.finding(
                     "GC103",
                     Severity.BLOCK,
                     ks,
                     f"Flux deletes {len(refs)} of the {size} objects it applies "
-                    f"({share:.0%}): {_counts(refs)}. The limit is {limit} objects or "
-                    f"{ratio:.0%}.",
+                    f"({share:.0%}): {_counts(refs)}. The limit is {limit} objects, or "
+                    f"{ratio:.0%} of a Kustomization with at least {least} objects.",
                 )
             )
     return found

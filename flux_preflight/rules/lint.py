@@ -10,7 +10,6 @@ from typing import NamedTuple
 from flux_preflight.model import Finding, Severity
 from flux_preflight.yamlfiles import YamlProblem, is_yaml, iter_docs
 
-YAMLLINT_SECONDS = 60
 _PARSABLE = re.compile(r"stdin:(\d+):\d+: \[(error|warning)\] (.*?)(?: \(([a-z-]+)\))?")
 
 # Only rules about meaning. `yes`/`on` are booleans to Kubernetes' YAML 1.1 parser, and 0755 is
@@ -41,16 +40,21 @@ class Problem(NamedTuple):
     rule: str | None
 
 
-def _lint(text: str) -> list[Problem]:
+def _lint(text: str, seconds: int) -> list[Problem]:
     """yamllint is GPL, so it runs as its own program rather than being imported into this one."""
-    done = subprocess.run(
-        ["yamllint", "--format", "parsable", "--config-data", LINT, "-"],
-        input=text,
-        capture_output=True,
-        encoding="utf-8",
-        timeout=YAMLLINT_SECONDS,
-        check=False,
-    )
+    try:
+        done = subprocess.run(
+            ["yamllint", "--format", "parsable", "--config-data", LINT, "-"],
+            input=text,
+            capture_output=True,
+            encoding="utf-8",
+            timeout=seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise LintError(
+            f"yamllint took longer than {seconds} s (timeouts.yamllint_seconds)"
+        ) from exc
     if done.returncode not in (0, 1):  # 1 is problems found
         raise LintError(f"yamllint exited {done.returncode}: {done.stderr.strip()[:300]}")
     problems = []
@@ -63,7 +67,7 @@ def _lint(text: str) -> list[Problem]:
     return problems
 
 
-def _warnings_before(base: Path, rel: str) -> set[tuple[str | None, str]]:
+def _warnings_before(base: Path, rel: str, seconds: int) -> set[tuple[str | None, str]]:
     """Warnings the file already had, by rule and line text: those are not this change's."""
     file = base / rel
     try:
@@ -73,12 +77,14 @@ def _warnings_before(base: Path, rel: str) -> set[tuple[str | None, str]]:
     lines = text.splitlines()
     return {
         (p.rule, lines[p.line - 1].strip() if 0 < p.line <= len(lines) else "")
-        for p in _lint(text)
+        for p in _lint(text, seconds)
         if p.level != "error"
     }
 
 
-def check(base: Path, tree: Path, changed: set[str], ignore: list[str]) -> list[Finding]:
+def check(
+    base: Path, tree: Path, changed: set[str], ignore: list[str], seconds: int
+) -> list[Finding]:
     found: list[Finding] = []
     for rel in sorted(changed):
         if not is_yaml(rel) or any(rel == i or rel.startswith(i + "/") for i in ignore):
@@ -102,9 +108,9 @@ def check(base: Path, tree: Path, changed: set[str], ignore: list[str]) -> list[
                     "GC002", Severity.BLOCK, "", f"{rel}:{exc.line}", f"{rel}: {exc}", rel, exc.line
                 )
             )
-        before = _warnings_before(base, rel)
+        before = _warnings_before(base, rel, seconds)
         lines = text.splitlines()
-        for problem in _lint(text):
+        for problem in _lint(text, seconds):
             line = lines[problem.line - 1].strip() if 0 < problem.line <= len(lines) else ""
             if problem.level != "error" and (problem.rule, line) in before:
                 continue
