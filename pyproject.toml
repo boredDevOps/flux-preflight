@@ -1,0 +1,48 @@
+[project]
+name = "flux-preflight"
+version = "1.0.0"
+description = "Checks a Flux repository's merge request for what it would delete or break in the cluster"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.12"
+dependencies = [
+    "PyYAML~=6.0",
+    "yamllint~=1.35",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest~=8.3",
+    "ruff~=0.9.0",
+    "mypy~=1.14",
+    "types-PyYAML",
+]
+
+[project.scripts]
+flux-preflight = "flux_preflight.cli:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["flux_preflight*"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["flux_preflight", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["flux_preflight"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
