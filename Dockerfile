@@ -1,4 +1,4 @@
-# flux-preflight: runs in GitLab CI on merge requests to a Flux repository.
+# flux-preflight: runs in GitLab CI or GitHub Actions on changes to a Flux repository.
 # The binaries come from their projects' own images, pinned by digest.
 FROM ghcr.io/fluxcd/flux-cli:v2.7.2@sha256:c10e77794dc4519322cbc58e75c7f612125e4276b726c6cb019d87e9dadb08dd AS flux
 FROM ghcr.io/yannh/kubeconform:v0.7.0@sha256:85dbef6b4b312b99133decc9c6fc9495e9fc5f92293d4ff3b7e1b30f5611823c AS kubeconform
@@ -27,5 +27,5 @@ RUN pip install --no-cache-dir .
 LABEL org.opencontainers.image.source="https://github.com/boredDevOps/flux-preflight" \
       org.opencontainers.image.description="Checks a Flux repository's merge request for what it would delete or break in the cluster" \
       org.opencontainers.image.licenses="Apache-2.0"
-# GitLab runs the job's script in a shell in its own clone, so no ENTRYPOINT.
+# The CI runs its own commands in the image, in its own clone, so no ENTRYPOINT.
 CMD ["flux-preflight", "--help"]

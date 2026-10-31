@@ -13,29 +13,35 @@ import tempfile
 import traceback
 from pathlib import Path
 
-from flux_preflight import check, git, gitlab, report
+from flux_preflight import check, git, github, gitlab, report
 from flux_preflight.config import ConfigError, load_config
 
 
-def _default_base() -> str | None:
+def _default_base(repo: Path, head: str) -> str | None:
     if os.environ.get("CI_MERGE_REQUEST_DIFF_BASE_SHA"):
         return os.environ["CI_MERGE_REQUEST_DIFF_BASE_SHA"]
     if os.environ.get("CI_MERGE_REQUEST_TARGET_BRANCH_NAME"):
         return f"origin/{os.environ['CI_MERGE_REQUEST_TARGET_BRANCH_NAME']}"
-    return None
+    return github.base(repo, head)
+
+
+def _default_target_branch() -> str | None:
+    return os.environ.get("CI_MERGE_REQUEST_TARGET_BRANCH_NAME") or github.target_branch()
+
+
+def _default_description() -> str:
+    return os.environ.get("CI_MERGE_REQUEST_DESCRIPTION") or github.description()
 
 
 def parse(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="flux-preflight", description=__doc__.split("\n")[0])
     parser.add_argument("--repo", type=Path, default=Path.cwd(), help="the Flux repository")
-    parser.add_argument("--base", default=_default_base(), help="what the change is compared with")
+    parser.add_argument("--base", help="what the change is compared with")
     parser.add_argument(
         "--head", default="HEAD", help=f"the change; {git.WORKTREE} for uncommitted"
     )
     parser.add_argument(
-        "--target-branch",
-        default=os.environ.get("CI_MERGE_REQUEST_TARGET_BRANCH_NAME"),
-        help="only clusters that deploy from this branch are checked",
+        "--target-branch", help="only clusters that deploy from this branch are checked"
     )
     parser.add_argument("--mode", choices=["warn", "block"], help="overrides .flux-preflight.yaml")
     parser.add_argument("--out", type=Path, default=Path("flux-preflight"), help="where reports go")
@@ -59,7 +65,12 @@ def main(argv: list[str] | None = None) -> int:
 def _main(argv: list[str] | None) -> int:
     args = parse(argv)
     repo = args.repo.resolve()
-    if not args.base:
+    try:
+        base = args.base or _default_base(repo, args.head)
+    except git.GitError as exc:
+        print(f"flux-preflight: {exc}", file=sys.stderr)
+        return 2
+    if not base:
         print("flux-preflight: no --base and not a merge request pipeline", file=sys.stderr)
         return 2
     try:
@@ -68,13 +79,14 @@ def _main(argv: list[str] | None) -> int:
         print(f"flux-preflight: {exc}", file=sys.stderr)
         return 2
     mode = args.mode or config.mode
-    description = os.environ.get("CI_MERGE_REQUEST_DESCRIPTION", "")
+    target_branch = args.target_branch or _default_target_branch()
+    description = _default_description()
     if args.description_file:
         description = args.description_file.read_text(encoding="utf-8")
     with tempfile.TemporaryDirectory(prefix="flux-preflight-") as scratch:
         work = Path(scratch)
         try:
-            base_tree, head_tree, changed = check.prepare(repo, args.base, args.head, work)
+            base_tree, head_tree, changed = check.prepare(repo, base, args.head, work)
         except git.GitError as exc:
             print(f"flux-preflight: {exc}", file=sys.stderr)
             return 2
@@ -84,7 +96,7 @@ def _main(argv: list[str] | None) -> int:
             head_tree=head_tree,
             changed=changed,
             work=work,
-            target_branch=args.target_branch,
+            target_branch=target_branch,
             description=description,
             tools=check.Tools(flux=args.flux, kubeconform=args.kubeconform),
         )
@@ -94,9 +106,12 @@ def _main(argv: list[str] | None) -> int:
     (args.out / "report.json").write_text(report.as_json(result, mode), encoding="utf-8")
     (args.out / "code-quality.json").write_text(report.code_quality(result), encoding="utf-8")
     print(report.text(result, mode))
-    problem = gitlab.post_note(note)
-    if problem:
-        print(f"flux-preflight: {problem}", file=sys.stderr)
+    for line in github.workflow_commands(result.findings, report.verdict(result, mode)):
+        print(line)
+    github.summary(note)
+    for problem in (gitlab.post_note(note), github.post_comment(note)):
+        if problem:
+            print(f"flux-preflight: {problem}", file=sys.stderr)
     return report.exit_code(result, mode)
 
 

@@ -281,6 +281,14 @@ class Repo:
         )
 
 
+@pytest.fixture(autouse=True)
+def no_ci(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests run inside CI too: the runner's own pipeline must not become the one checked."""
+    for name in list(os.environ):
+        if name.startswith(("CI_", "GITHUB_", "FLUX_PREFLIGHT_GIT")):
+            monkeypatch.delenv(name)
+
+
 @pytest.fixture
 def repo(tmp_path: Path) -> Repo:
     if not shutil.which("flux") and not os.environ.get("FLUX_PREFLIGHT_NO_FLUX"):

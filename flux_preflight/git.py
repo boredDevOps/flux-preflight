@@ -8,6 +8,7 @@ import tarfile
 from pathlib import Path
 
 WORKTREE = "WORKTREE"
+_FULL_CLONE = "Clone the whole history (GIT_DEPTH: 0 in GitLab, fetch-depth: 0 on actions/checkout)"
 
 
 class GitError(Exception):
@@ -33,7 +34,25 @@ def ensure_commit(repo: Path, ref: str) -> str:
     except GitError as exc:
         raise GitError(
             f"the base {ref} is not in this clone and could not be fetched ({exc}). "
-            "Set GIT_DEPTH: 0 on the job, or pass --base."
+            f"{_FULL_CLONE}, or pass --base."
+        ) from exc
+
+
+def parents(repo: Path, ref: str) -> list[str]:
+    """The parents of `ref`; none for a root commit, or for the last commit of a shallow clone."""
+    return _git(repo, "rev-list", "--parents", "-n", "1", ref).decode().split()[1:]
+
+
+def merge_base(repo: Path, base: str, head: str) -> str:
+    """Where `head` left `base`. A shallow clone does not have it, and comparing with `base`
+    itself would show what the base branch did since as this change undoing it."""
+    base_sha = ensure_commit(repo, base)
+    try:
+        return _git(repo, "merge-base", base_sha, head).decode().strip()
+    except GitError as exc:
+        raise GitError(
+            f"no common commit of {base} and {head} in this clone ({exc}). "
+            f"{_FULL_CLONE}, or pass --base."
         ) from exc
 
 

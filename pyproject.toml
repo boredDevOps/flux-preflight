@@ -1,6 +1,6 @@
 [project]
 name = "flux-preflight"
-version = "1.3.0"
+version = "1.4.0"
 description = "Checks a Flux repository's merge request for what it would delete or break in the cluster"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]

@@ -1,7 +1,8 @@
 # flux-preflight
 
 Checks a merge request into a Flux repository **before** it is merged. It reports what Flux
-would delete or break in each cluster when the merge lands.
+would delete or break in each cluster when the merge lands. It runs in GitLab CI on merge requests
+and in GitHub Actions on pull requests.
 
 It renders every cluster twice, once from the target branch and once from the merge request,
 exactly as Flux builds it (`flux build kustomization --dry-run`: the Flux Kustomization's own
@@ -143,6 +144,42 @@ Exit codes:
 To block for real, set `mode: block` and turn on *Pipelines must succeed* in the project's
 merge request settings.
 
+## In GitHub Actions
+
+The steps, what is compared and what to do when it fails are in [docs/github.md](docs/github.md).
+The workflow, in `.github/workflows/flux-preflight.yml`:
+
+```yaml
+name: flux-preflight
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]   # edited: an allow line starts a new run
+permissions:
+  contents: read
+  pull-requests: write      # only for the comment
+jobs:
+  flux-preflight:
+    runs-on: ubuntu-latest
+    container: ghcr.io/boreddevops/flux-preflight:v1
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0    # the commit the pull request is compared with must be in the clone
+      - env:
+          FLUX_PREFLIGHT_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # optional: the comment
+        run: flux-preflight --out flux-preflight || [ $? -eq 3 ]  # 3 passes: warn mode
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: flux-preflight
+          path: flux-preflight/
+```
+
+The check reads the pull request, its base and its description from the event GitHub writes for
+the run. Without a token it still puts the report on the run's Summary page and the blocking
+findings on the pull request's lines as annotations. To block for real, set `mode: block` and make
+`flux-preflight` a required status check in a ruleset or branch protection rule.
+
 ## Configuration
 
 `.flux-preflight.yaml` in the root of the checked repository. The file and every field in it are
@@ -231,12 +268,12 @@ The limits do not soften other rules. Deleting one Namespace is GC101 whatever t
 | Option | Default | What it does |
 |---|---|---|
 | `--repo` | the current directory | The Flux repository. |
-| `--base` | `$CI_MERGE_REQUEST_DIFF_BASE_SHA`, then `origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME` | What the change is compared with. Required outside a merge request pipeline. |
+| `--base` | GitLab: `$CI_MERGE_REQUEST_DIFF_BASE_SHA`, then `origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME`. GitHub: the base branch the checked-out merge commit merges into, or where the pull request left it | What the change is compared with. Required outside a merge request or pull request run. |
 | `--head` | `HEAD` | The change. `WORKTREE` checks uncommitted files. |
-| `--target-branch` | `$CI_MERGE_REQUEST_TARGET_BRANCH_NAME` | Only clusters that deploy from this branch are checked. Without it, all are. |
+| `--target-branch` | `$CI_MERGE_REQUEST_TARGET_BRANCH_NAME`, or the pull request's base branch | Only clusters that deploy from this branch are checked. Without it, all are. |
 | `--mode` | `mode` from the file | Overrides it. |
 | `--out` | `flux-preflight` | The directory for `report.md`, `report.json` and `code-quality.json`. |
-| `--description-file` | `$CI_MERGE_REQUEST_DESCRIPTION` | A file to read `flux-preflight allow` lines from. |
+| `--description-file` | `$CI_MERGE_REQUEST_DESCRIPTION`, or the pull request's description | A file to read `flux-preflight allow` lines from. |
 | `--flux` | `$FLUX_BIN`, then `flux` | The Flux binary. |
 | `--kubeconform` | `$KUBECONFORM_BIN`, then `kubeconform` | The kubeconform binary. |
 
@@ -248,6 +285,10 @@ The limits do not soften other rules. Deleting one Namespace is GC101 whatever t
 | `FLUX_BIN`, `KUBECONFORM_BIN` | you, optional | Defaults for `--flux` and `--kubeconform`. |
 | `CI_MERGE_REQUEST_DIFF_BASE_SHA`, `CI_MERGE_REQUEST_TARGET_BRANCH_NAME`, `CI_MERGE_REQUEST_DESCRIPTION` | GitLab | Defaults for the options above. |
 | `CI_API_V4_URL`, `CI_PROJECT_ID`, `CI_MERGE_REQUEST_IID` | GitLab | Where the note goes. |
+| `FLUX_PREFLIGHT_GITHUB_TOKEN` | you, optional | Lets the job write the report as a comment on the pull request. |
+| `GITHUB_ACTIONS`, `GITHUB_EVENT_NAME`, `GITHUB_EVENT_PATH` | GitHub | The pull request: its base, base branch, head and description. Only `pull_request` events are read. |
+| `GITHUB_STEP_SUMMARY` | GitHub | The report goes on the run's Summary page. |
+| `GITHUB_API_URL`, `GITHUB_REPOSITORY` | GitHub | Where the comment goes. |
 
 ## Locally
 
