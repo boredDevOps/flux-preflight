@@ -171,7 +171,7 @@ verified nothing.
 - **Merged results pipelines** check the merge result against the merge request's base commit, so
   changes that reached the target branch after the branch was cut can show up as this merge
   request's. This setup has not been tested with them.
-- **Charts are not rendered yet.** HelmRelease values are checked, but what a chart version deletes
+- **Charts are not rendered.** HelmRelease values are checked, but what a chart version deletes
   is not. It is listed under "Not checked".
 - **A Kustomization that reads another repository is not rendered.** Deleting it still blocks, and
   moving its source to another tag warns as `GC206`, but read that repository's changes yourself.

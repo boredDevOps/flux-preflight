@@ -70,6 +70,14 @@ def _prunes(ks: Doc) -> bool:
     return dig(ks, "spec.prune") is True
 
 
+def takes_along(ks: Doc) -> bool:
+    """Whether a Kustomization, when deleted, deletes what it applied."""
+    policy = dig(ks, "spec.deletionPolicy")
+    if policy in ("Delete", "WaitForTermination"):
+        return True
+    return policy != "Orphan" and _prunes(ks)
+
+
 def compare(base: Render, head: Render) -> Outcome:
     outcome = Outcome()
     head_owners = head.owners()
@@ -120,7 +128,9 @@ def compare(base: Render, head: Render) -> Outcome:
             new_owner = owners[0] if owners else None
             if new_owner is not None and new_owner != ks and new_owner not in gone:
                 outcome.moves.append(Move(ref, doc, ks, new_owner))
-            elif not _prunes(spec):
+            elif ks in gone and not takes_along(spec):
+                outcome.kept.append(Kept(ref, ks, "its deleted Kustomization leaves it"))
+            elif ks not in gone and not _prunes(spec):
                 outcome.kept.append(Kept(ref, ks, "its Kustomization does not prune"))
             elif prune_disabled(doc):
                 outcome.kept.append(Kept(ref, ks, "it is marked prune: disabled"))

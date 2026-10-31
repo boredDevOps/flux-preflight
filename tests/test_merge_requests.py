@@ -436,7 +436,8 @@ def test_deleting_it_says_what_goes_cannot_be_counted(repo: Repo, capsys: Cap) -
 def test_deleting_it_without_prune_takes_nothing_along(repo: Repo, capsys: Cap) -> None:
     root = _reads_another_repository(repo, READS_OTHER.replace("prune: true", "prune: false"))
     repo.write({ROOT: root + OTHER_SOURCE})
-    assert "applied nothing" in repo.check(capsys).find("GC101", OTHER_KS)["message"]
+    message = repo.check(capsys).find("GC101", OTHER_KS)["message"]
+    assert "stays in the cluster" in message and "applied nothing" not in message
 
 
 def test_deleting_its_parent_says_what_is_not_counted(repo: Repo, capsys: Cap) -> None:
@@ -526,6 +527,321 @@ def test_a_source_nothing_foreign_reads_does_not_warn(repo: Repo, capsys: Cap) -
     _reads_another_repository(repo, "")
     repo.edit(ROOT, "tag: v1.1.0", "tag: v1.2.0")
     assert "GC206" not in repo.check(capsys).rules()
+
+
+APPS_KS = "Kustomization/flux-system/apps"
+APPS_SPEC = "  path: ./apps\n"
+HELM = "  values:\n    architecture: standalone\n"
+WEB = "  replicas: 2\n"
+DB = "  serviceName: db\n"
+PV = """\
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: disk
+spec:
+  capacity: {storage: 1Gi}
+  accessModes: [ReadWriteOnce]
+  hostPath: {path: /data}
+"""
+
+
+@pytest.mark.parametrize(
+    ("file", "old", "new", "subject", "said"),
+    [
+        pytest.param(
+            ROOT, APPS_SPEC, f"{APPS_SPEC}  force: true\n", APPS_KS, "force: true", id="force"
+        ),
+        pytest.param(
+            ROOT,
+            f"{APPS_SPEC}  prune: true\n",
+            f"{APPS_SPEC}  prune: false\n  deletionPolicy: Delete\n",
+            APPS_KS,
+            "deletionPolicy: Delete",
+            id="deletion policy against prune false",
+        ),
+        pytest.param(
+            "data/redis.yaml",
+            HELM,
+            f"  upgrade:\n    force: true\n{HELM}",
+            "HelmRelease/shop/redis",
+            "upgrade.force",
+            id="helm upgrade force",
+        ),
+        pytest.param(
+            "data/redis.yaml",
+            HELM,
+            f"  rollback:\n    force: true\n{HELM}",
+            "HelmRelease/shop/redis",
+            "rollback.force",
+            id="helm rollback force",
+        ),
+        pytest.param(
+            "data/redis.yaml",
+            HELM,
+            f"  rollback:\n    recreate: true\n{HELM}",
+            "HelmRelease/shop/redis",
+            "rollback.recreate",
+            id="helm rollback recreate",
+        ),
+        pytest.param(
+            "data/redis.yaml",
+            HELM,
+            f"  upgrade:\n    remediation:\n      strategy: uninstall\n{HELM}",
+            "HelmRelease/shop/redis",
+            "uninstalls the release",
+            id="helm uninstall on failure",
+        ),
+        pytest.param(
+            "data/redis.yaml",
+            HELM,
+            f"  upgrade:\n    crds: CreateReplace\n{HELM}",
+            "HelmRelease/shop/redis",
+            "upgrade.crds",
+            id="helm upgrade replaces crds",
+        ),
+        pytest.param(
+            "data/redis.yaml",
+            HELM,
+            f"  install:\n    crds: CreateReplace\n{HELM}",
+            "HelmRelease/shop/redis",
+            "install.crds",
+            id="helm install replaces crds",
+        ),
+        pytest.param(
+            "data/db.yaml",
+            DB,
+            f"{DB}  persistentVolumeClaimRetentionPolicy:\n    whenDeleted: Delete\n",
+            "StatefulSet/shop/db",
+            "whenDeleted: Delete",
+            id="volumes deleted with the statefulset",
+        ),
+        pytest.param(
+            "data/db.yaml",
+            DB,
+            f"{DB}  persistentVolumeClaimRetentionPolicy:\n    whenScaled: Delete\n",
+            "StatefulSet/shop/db",
+            "whenScaled: Delete",
+            id="volumes deleted on scale down",
+        ),
+        pytest.param(
+            "apps/web.yaml",
+            WEB,
+            f"{WEB}  strategy:\n    type: Recreate\n",
+            "Deployment/shop/web",
+            "Recreate",
+            id="recreate rollout",
+        ),
+        pytest.param(
+            "apps/web.yaml",
+            "  namespace: shop\n",
+            "  namespace: shop\n  annotations:\n    kustomize.toolkit.fluxcd.io/force: Enabled\n",
+            "Deployment/shop/web",
+            "marked for force",
+            id="force annotation",
+        ),
+        pytest.param(
+            "apps/web.yaml",
+            "  namespace: shop\n",
+            "  namespace: shop\n  labels:\n    kustomize.toolkit.fluxcd.io/force: enabled\n",
+            "Deployment/shop/web",
+            "marked for force",
+            id="force label",
+        ),
+    ],
+)
+def test_turning_on_a_setting_that_can_destroy_warns_once_and_never_blocks_by_itself(
+    repo: Repo, capsys: Cap, file: str, old: str, new: str, subject: str, said: str
+) -> None:
+    _with_config(repo, "")
+    repo.edit(file, old, new)
+    checked = repo.check(capsys)
+    found = [
+        f
+        for f in checked.report["findings"]
+        if f["rule"] == "GC207" and f["subject"].startswith(subject)
+    ]
+    assert [f["severity"] for f in found] == ["warn"]
+    assert said in found[0]["message"]
+    assert checked.code == 0
+
+    # The same setting already in Git is listed once and does not warn again.
+    repo.base = repo.commit("it is in Git now")
+    repo.edit("apps/config.yaml", "mode: production", "mode: staging")
+    again = repo.check(capsys)
+    assert "GC207" not in again.rules("warn")
+    assert subject in again.find("GC207", "existing")["message"]
+
+
+@pytest.mark.parametrize(
+    ("file", "old", "new"),
+    [
+        pytest.param(ROOT, APPS_SPEC, f"{APPS_SPEC}  force: false\n", id="force false"),
+        pytest.param(
+            ROOT,
+            "  path: ./apps\n  prune: true\n",
+            "  path: ./apps\n  prune: false\n  deletionPolicy: Orphan\n",
+            id="deletion policy that keeps",
+        ),
+        pytest.param(
+            ROOT,
+            "  path: ./apps\n",
+            "  path: ./apps\n  deletionPolicy: Delete\n",
+            id="delete with prune on is the default",
+        ),
+        pytest.param(
+            "data/redis.yaml", HELM, f"  upgrade:\n    crds: Create\n{HELM}", id="helm crds create"
+        ),
+        pytest.param(
+            "data/redis.yaml",
+            HELM,
+            f"  upgrade:\n    remediation:\n      strategy: rollback\n{HELM}",
+            id="helm rollback on failure",
+        ),
+        pytest.param(
+            "data/db.yaml",
+            DB,
+            f"{DB}  persistentVolumeClaimRetentionPolicy:\n    whenDeleted: Retain\n",
+            id="volumes retained",
+        ),
+        pytest.param(
+            "apps/web.yaml",
+            WEB,
+            f"{WEB}  strategy:\n    type: RollingUpdate\n",
+            id="rolling update",
+        ),
+        pytest.param(
+            "apps/web.yaml",
+            "  namespace: shop\n",
+            "  namespace: shop\n  annotations:\n    kustomize.toolkit.fluxcd.io/force: disabled\n",
+            id="force disabled",
+        ),
+    ],
+)
+def test_the_safe_value_of_a_setting_does_not_warn(
+    repo: Repo, capsys: Cap, file: str, old: str, new: str
+) -> None:
+    _with_config(repo, "")
+    repo.edit(file, old, new)
+    assert "GC207" not in repo.check(capsys).rules()
+
+
+def test_force_warns_again_when_it_is_about_to_matter_for_a_crd(repo: Repo, capsys: Cap) -> None:
+    crd = (
+        "apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nmetadata:\n"
+        "  name: widgets.example.com\nspec:\n  group: example.com\n"
+        "  names: {kind: Widget, plural: widgets, singular: widget, listKind: WidgetList}\n"
+        "  scope: Namespaced\n  versions:\n    - name: v1\n      served: true\n"
+        "      storage: true\n      schema:\n        openAPIV3Schema:\n          type: object\n"
+    )
+    repo.write({"apps/crd.yaml": crd})
+    repo.edit("apps/kustomization.yaml", "  - config.yaml\n", "  - config.yaml\n  - crd.yaml\n")
+    repo.edit(ROOT, APPS_SPEC, f"{APPS_SPEC}  force: true\n")
+    repo.base = repo.commit("force, with a CRD")
+
+    repo.edit("apps/web.yaml", "nginx:1.27.0", "nginx:1.27.1")
+    assert "GC207" not in repo.check(capsys).rules("warn")
+
+    repo.base = repo.commit("an unrelated change")
+    repo.edit(
+        "apps/crd.yaml",
+        "  scope: Namespaced\n",
+        "  scope: Namespaced\n  conversion: {strategy: None}\n",
+    )
+    message = repo.check(capsys).find("GC207", APPS_KS)["message"]
+    assert "force: true" in message and "every object of its kind" in message
+
+
+def test_force_warns_again_when_another_repository_moves(repo: Repo, capsys: Cap) -> None:
+    forced = READS_OTHER.replace("  prune: true\n", "  prune: false\n  force: true\n")
+    _reads_another_repository(repo, forced)
+    repo.edit("apps/web.yaml", "nginx:1.27.0", "nginx:1.27.1")
+    quiet = repo.check(capsys)
+    assert "GC207" not in quiet.rules("warn")
+    assert f"{OTHER_KS} (force: true)" in quiet.find("GC207", "existing")["message"]
+
+    repo.base = repo.commit("an unrelated change")
+    repo.edit(ROOT, "tag: v1.1.0", "tag: v1.2.0")
+    message = repo.check(capsys).find("GC207", OTHER_KS)["message"]
+    assert "force: true" in message and "every object of its kind" in message
+
+
+@pytest.mark.parametrize(
+    ("ref", "said"),
+    [
+        pytest.param("branch: main", "the branch main", id="branch"),
+        pytest.param("semver: '>=1.0.0'", "the version range >=1.0.0", id="range"),
+        pytest.param("name: refs/heads/main", "the branch refs/heads/main", id="branch by name"),
+    ],
+)
+def test_a_source_that_moves_by_itself_warns(repo: Repo, capsys: Cap, ref: str, said: str) -> None:
+    _reads_another_repository(repo)
+    repo.edit(ROOT, "tag: v1.1.0", ref)
+    message = repo.check(capsys).find("GC207", OTHER_KS)["message"]
+    assert said in message and "Pin the source" in message
+
+
+@pytest.mark.parametrize(
+    "ref",
+    [
+        pytest.param("tag: v1.2.0", id="tag"),
+        pytest.param("commit: 0123456789abcdef", id="commit"),
+        pytest.param("name: refs/tags/v1.2.0", id="tag by name"),
+    ],
+)
+def test_a_pinned_source_does_not_warn(repo: Repo, capsys: Cap, ref: str) -> None:
+    _reads_another_repository(repo)
+    repo.edit(ROOT, "tag: v1.1.0", ref)
+    assert "GC207" not in repo.check(capsys).rules()
+
+
+def test_a_source_that_moves_by_itself_without_prune_deletes_nothing(
+    repo: Repo, capsys: Cap
+) -> None:
+    _reads_another_repository(repo, READS_OTHER.replace("prune: true", "prune: false"))
+    repo.edit(ROOT, "tag: v1.1.0", "branch: main")
+    assert "GC207" not in repo.check(capsys).rules()
+
+
+def test_losing_prune_disabled_warns(repo: Repo, capsys: Cap) -> None:
+    marker = "  namespace: shop\n  annotations:\n    kustomize.toolkit.fluxcd.io/prune: disabled\n"
+    repo.edit("apps/web.yaml", "  namespace: shop\n", marker)
+    repo.base = repo.commit("protected")
+    repo.edit("apps/web.yaml", marker, "  namespace: shop\n")
+    assert "no longer marked" in repo.check(capsys).find("GC207", "Deployment/shop/web")["message"]
+
+
+def test_a_statefulset_with_fewer_replicas_warns(repo: Repo, capsys: Cap) -> None:
+    repo.edit("data/db.yaml", DB, f"  replicas: 3\n{DB}")
+    repo.base = repo.commit("three replicas")
+    repo.edit("data/db.yaml", "  replicas: 3\n", "  replicas: 2\n")
+    message = repo.check(capsys).find("GC207", "StatefulSet/shop/db")["message"]
+    assert "from 3 to 2 replicas" in message
+
+    repo.base = repo.commit("two replicas")
+    repo.edit("data/db.yaml", "  replicas: 2\n", "  replicas: 4\n")
+    assert "GC207" not in repo.check(capsys).rules()
+
+
+def test_a_persistent_volume_that_deletes_its_data_warns(repo: Repo, capsys: Cap) -> None:
+    repo.write({"apps/pv.yaml": PV})
+    repo.edit("apps/kustomization.yaml", "  - config.yaml\n", "  - config.yaml\n  - pv.yaml\n")
+    repo.base = repo.commit("a volume")
+    repo.edit("apps/pv.yaml", "  hostPath:", "  persistentVolumeReclaimPolicy: Delete\n  hostPath:")
+    assert "the data goes" in repo.check(capsys).find("GC207", "PersistentVolume/disk")["message"]
+
+
+def test_deleting_a_kustomization_follows_its_deletion_policy(repo: Repo, capsys: Cap) -> None:
+    repo.edit(
+        ROOT,
+        "  path: ./apps\n  prune: true\n",
+        "  path: ./apps\n  prune: false\n  deletionPolicy: Delete\n",
+    )
+    repo.base = repo.commit("delete despite prune false")
+    # The apps Kustomization is the first document of the file: only the rest stays.
+    _, _, rest = (repo.path / ROOT).read_text(encoding="utf-8").partition("---\n")
+    repo.write({ROOT: rest})
+    assert "Namespace/shop" in repo.check(capsys).find("GC101", APPS_KS)["message"]
 
 
 def test_a_cluster_on_another_branch_is_left_alone(repo: Repo, capsys: Cap) -> None:

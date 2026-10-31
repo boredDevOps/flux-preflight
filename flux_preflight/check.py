@@ -13,7 +13,7 @@ from flux_preflight.context import ClusterCheck, Files
 from flux_preflight.inventory import Outcome, compare
 from flux_preflight.model import Finding, Render, Severity
 from flux_preflight.render import render_cluster
-from flux_preflight.rules import build, change, deletion, hygiene, lint, schema
+from flux_preflight.rules import build, change, deletion, destructive, hygiene, lint, schema
 from flux_preflight.yamlfiles import ignored, is_yaml, raw_docs
 
 
@@ -158,6 +158,7 @@ def _cluster(
         *build.check(cc),
         *deletion.check(cc),
         *change.check(cc),
+        *destructive.check(cc),
         *hygiene.check(cc),
         *schema.check(cc, tools.kubeconform, work / "schemas" / safe),
     ]

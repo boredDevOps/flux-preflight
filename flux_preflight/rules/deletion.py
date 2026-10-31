@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 
 from flux_preflight.context import ClusterCheck
-from flux_preflight.inventory import Deletion
+from flux_preflight.inventory import Deletion, takes_along
 from flux_preflight.model import FLUX_HELM, FLUX_KUSTOMIZE, FLUX_SOURCE, Finding, Ref, Severity, dig
 
 SOURCE_KINDS = ("GitRepository", "OCIRepository", "HelmRepository", "Bucket", "HelmChart")
@@ -34,7 +34,7 @@ def _counts(refs: list[Ref]) -> str:
 
 def _unknowable(cc: ClusterCheck, ks: Ref) -> str | None:
     """Why what a deleted Kustomization takes along cannot be counted; None when it can."""
-    if dig(cc.base.kustomizations.get(ks, {}), "spec.prune") is not True:
+    if not takes_along(cc.base.kustomizations.get(ks, {})):
         return None
     if ks in cc.base.foreign:
         return cc.base.foreign[ks]
@@ -57,6 +57,8 @@ def _why(cc: ClusterCheck, item: Deletion) -> str:
                 "Flux deletes it and everything it applied. How much that is cannot be known "
                 f"here: {unknowable}"
             )
+        if ref in cc.base.foreign:
+            return "Flux deletes it; what it applied stays in the cluster, and nothing manages it"
         taken = [d.ref for d in cc.outcome.taken_by(ref)]
         named = sorted(str(r) for r in taken if protected(r) and not r.is_flux_kustomization)
         noun = "object" if len(taken) == 1 else "objects"

@@ -100,7 +100,7 @@ def quantity(value: object) -> float | None:
     return float(match.group(1)) * _UNITS[match.group(2) or ""]
 
 
-def _same(a: object, b: object) -> bool:
+def same(a: object, b: object) -> bool:
     return canonical({"v": a}) == canonical({"v": b})
 
 
@@ -130,7 +130,7 @@ def _immutable(cc: ClusterCheck, ref: Ref, old: Doc, new: Doc) -> list[Finding]:
     changed = [
         path
         for path in IMMUTABLE.get((ref.group, ref.kind), ())
-        if not _same(dig(old, path), dig(new, path))
+        if not same(dig(old, path), dig(new, path))
     ]
     if ref.kind == "Service" and ref.group == "":
         before, after = dig(old, "spec.clusterIP"), dig(new, "spec.clusterIP")
@@ -138,7 +138,7 @@ def _immutable(cc: ClusterCheck, ref: Ref, old: Doc, new: Doc) -> list[Finding]:
             changed.append("spec.clusterIP")
     if ref.kind in ("ConfigMap", "Secret") and ref.group == "" and old.get("immutable") is True:
         changed += [
-            k for k in ("data", "binaryData", "stringData") if not _same(old.get(k), new.get(k))
+            k for k in ("data", "binaryData", "stringData") if not same(old.get(k), new.get(k))
         ]
     if ref.kind == "PersistentVolumeClaim" and ref.group == "":
         before = quantity(dig(old, "spec.resources.requests.storage"))
@@ -235,8 +235,8 @@ def _helm(cc: ClusterCheck, ref: Ref, old: Doc, new: Doc) -> list[Finding]:
     chart_new = dig(new, "spec.chart.spec") or {}
     if (
         chart_old.get("chart") != chart_new.get("chart")
-        or not _same(chart_old.get("sourceRef"), chart_new.get("sourceRef"))
-        or not _same(dig(old, "spec.chartRef"), dig(new, "spec.chartRef"))
+        or not same(chart_old.get("sourceRef"), chart_new.get("sourceRef"))
+        or not same(dig(old, "spec.chartRef"), dig(new, "spec.chartRef"))
     ):
         found.append(
             cc.finding(
@@ -263,7 +263,7 @@ def _helm(cc: ClusterCheck, ref: Ref, old: Doc, new: Doc) -> list[Finding]:
 
 def _kustomization(cc: ClusterCheck, ref: Ref, old: Doc, new: Doc) -> list[Finding]:
     changed = [
-        name for name in KS_FIELDS if not _same(dig(old, f"spec.{name}"), dig(new, f"spec.{name}"))
+        name for name in KS_FIELDS if not same(dig(old, f"spec.{name}"), dig(new, f"spec.{name}"))
     ]
     found: list[Finding] = []
     why = cc.head.foreign.get(ref) or cc.base.foreign.get(ref)
@@ -291,14 +291,19 @@ def _kustomization(cc: ClusterCheck, ref: Ref, old: Doc, new: Doc) -> list[Findi
     return found
 
 
-def _foreign_source(cc: ClusterCheck, ref: Ref, old: Doc, new: Doc) -> list[Finding]:
-    """A source moved by this merge: the Kustomizations that read it apply something else now."""
+def source_changes(old: Doc, new: Doc) -> list[str]:
+    """The fields of a source that this merge changes and that decide what it serves."""
     before, after = old.get("spec") or {}, new.get("spec") or {}
-    changed = sorted(
+    return sorted(
         name
         for name in set(before) | set(after)
-        if name not in SOURCE_DELIVERY and not _same(before.get(name), after.get(name))
+        if name not in SOURCE_DELIVERY and not same(before.get(name), after.get(name))
     )
+
+
+def _foreign_source(cc: ClusterCheck, ref: Ref, old: Doc, new: Doc) -> list[Finding]:
+    """A source moved by this merge: the Kustomizations that read it apply something else now."""
+    changed = source_changes(old, new)
     readers = []
     for ks in sorted(cc.head.foreign):
         source = source_of(cc.head.kustomizations[ks])

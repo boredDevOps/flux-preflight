@@ -35,6 +35,7 @@ It never talks to a cluster (`KUBECONFIG` points at nothing) and needs no secret
 | GC203 | warn | a HelmRelease changes chart or source, or moves to a new major version |
 | GC204 | warn | something is suspended or scaled to 0 |
 | GC206 | warn | a Kustomization reading another repository changes what it applies, or that repository's source moves to another tag or URL: the new content cannot be seen |
+| GC207 | warn | a setting that can delete or replace something later ([the list](#settings-that-can-destroy-something-later)) |
 | GC302 | warn | a value under a password/token-like key written in Git (the value is never printed) |
 | GC303 | warn | an image without a pinned version (`latest`, no tag) |
 | GC304 | warn | a chart version that is a range or missing |
@@ -64,6 +65,32 @@ What it can see, it reports:
 
 What the other repository deletes is not counted towards GC103. A source that follows a branch
 can change without any merge request here, so no check sees it. Pin these sources to a tag.
+
+### Settings that can destroy something later
+
+Some settings delete nothing when they merge, but do so at the next rollout, failure or scale-down.
+GC207 warns when a merge request turns one on. Those already in Git are listed once as information.
+
+| Object | Setting | What it can do |
+|---|---|---|
+| Kustomization | `force: true` | When an apply comes back as invalid, Flux deletes the object and makes it again. For a CRD that deletes every object of its kind. Also warns when the merge changes a CRD it applies, or moves the source of one that reads another repository. |
+| Any object | `kustomize.toolkit.fluxcd.io/force: enabled` | The same, for this object. |
+| Any object | removing `kustomize.toolkit.fluxcd.io/prune: disabled` | The next time it leaves Git, Flux deletes it. |
+| Kustomization | `deletionPolicy: Delete` or `WaitForTermination` with `prune: false` | Deleting the Kustomization deletes what it applied, despite `prune: false`. |
+| Kustomization reading another repository, with `prune: true` | a source that follows a branch, a version range, `latest` or a bucket | The source moves with no merge request, and Flux deletes what the new content no longer has. |
+| HelmRelease | `upgrade.remediation.strategy: uninstall` | A failed upgrade uninstalls the release. |
+| HelmRelease | `upgrade.force`, `rollback.force` | Helm replaces resources instead of patching them. |
+| HelmRelease | `rollback.recreate` | A rollback restarts the pods. |
+| HelmRelease | `install.crds` or `upgrade.crds`: `CreateReplace` | The chart replaces existing CRDs, unseen here. |
+| StatefulSet | `persistentVolumeClaimRetentionPolicy`: `whenDeleted` or `whenScaled` is `Delete` | The volumes go with the pods. |
+| StatefulSet | fewer replicas, but not 0 (that is GC204) | The pods with the highest numbers stop. |
+| PersistentVolume | `persistentVolumeReclaimPolicy: Delete` | When the claim goes, the data goes. |
+| Deployment | `strategy.type: Recreate` | Each rollout stops all pods before it starts new ones. |
+
+GC101 and GC102 follow `deletionPolicy` too: `Orphan` keeps what a deleted Kustomization applied.
+
+This list is what the check knows, not everything that can go wrong. What a chart does at upgrade,
+what a controller does with an object, and what the data in a value means stay out of its sight.
 
 ## Accepting a finding
 

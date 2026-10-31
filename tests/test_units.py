@@ -95,6 +95,32 @@ def test_prune_disabled_and_prune_false_keep_objects() -> None:
     assert {k.ref for k in outcome.kept} == {plain[0], kss["data"][0]}
 
 
+@pytest.mark.parametrize(
+    ("prune", "policy", "goes"),
+    [
+        (True, None, True),
+        (False, None, False),
+        (True, "MirrorPrune", True),
+        (False, "MirrorPrune", False),
+        (False, "Delete", True),
+        (False, "WaitForTermination", True),
+        (True, "Orphan", False),
+    ],
+)
+def test_a_deleted_kustomization_follows_its_deletion_policy(
+    prune: bool, policy: str | None, goes: bool
+) -> None:
+    kss = {"root": ks("root"), "apps": ks("apps", prune=prune)}
+    if policy:
+        kss["apps"][1]["spec"]["deletionPolicy"] = policy
+    web = obj("ConfigMap", "web")
+    base = render({"root": [kss["root"], kss["apps"]], "apps": [web]}, kss)
+    head = render({"root": [kss["root"]]}, kss)
+    outcome = compare(base, head)
+    assert (web[0] in outcome.deleted) is goes
+    assert (web[0] in {k.ref for k in outcome.kept}) is not goes
+
+
 def test_an_object_another_kustomization_builds_moves() -> None:
     kss = {"root": ks("root"), "a": ks("a"), "b": ks("b")}
     ns = obj("Namespace", "shop", "")
